@@ -327,7 +327,29 @@ class WorkspaceManager: ObservableObject {
             openCursor.waitUntilExit()
             
             // Wait for Cursor to fully open and load
-            Thread.sleep(forTimeInterval: 4.0)
+            Thread.sleep(forTimeInterval: 3.0)
+            
+            // Maximize the window (fullscreen)
+            let fullscreenScript = """
+            tell application "Cursor" to activate
+            delay 0.3
+            tell application "System Events"
+                tell process "Cursor"
+                    set frontmost to true
+                    delay 0.2
+                    -- Enter fullscreen with Ctrl+Cmd+F
+                    keystroke "f" using {control down, command down}
+                end tell
+            end tell
+            """
+            var fsTask = Process()
+            fsTask.launchPath = "/usr/bin/osascript"
+            fsTask.arguments = ["-e", fullscreenScript]
+            try? fsTask.run()
+            fsTask.waitUntilExit()
+            
+            // Wait for fullscreen animation
+            Thread.sleep(forTimeInterval: 1.5)
             
             DispatchQueue.main.async {
                 self.repoStatuses[key] = .settingUp("preparing terminal")
