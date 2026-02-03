@@ -370,9 +370,96 @@ class WorkspaceManager: ObservableObject {
     }
     
     func stopWorkspace(_ workspace: Workspace) {
-        for repo in workspace.repos {
-            stopRepo(workspace: workspace, repo: repo)
+        let useCursorTerminal = config.settings?.useCursorTerminal ?? false
+        
+        // Stop terminal commands (kill Terminal tabs)
+        if let terminalCommands = workspace.terminalCommands {
+            for cmd in terminalCommands {
+                let key = "\(workspace.name):terminal:\(cmd.name)"
+                repoStatuses[key] = .stopped
+            }
         }
+        
+        // Stop repos
+        for repo in workspace.repos {
+            let key = "\(workspace.name):\(repo.name)"
+            repoStatuses[key] = .stopped
+            
+            if useCursorTerminal {
+                // Send Ctrl+C to Cursor and close window for this repo
+                let repoPath = expandPath(repo.path)
+                closeCursorWindow(path: repoPath)
+            } else {
+                stopRepo(workspace: workspace, repo: repo)
+            }
+        }
+        
+        // Close all Terminal windows that might be running our commands
+        closeTerminalWindows()
+    }
+    
+    func closeCursorWindow(path: String) {
+        let folderName = URL(fileURLWithPath: path).lastPathComponent
+        
+        // First send Ctrl+C to stop any running process in terminal
+        let stopScript = """
+        tell application "Cursor" to activate
+        delay 0.3
+        tell application "System Events"
+            tell process "Cursor"
+                keystroke "c" using control down
+            end tell
+        end tell
+        delay 0.3
+        """
+        
+        var task = Process()
+        task.launchPath = "/usr/bin/osascript"
+        task.arguments = ["-e", stopScript]
+        try? task.run()
+        task.waitUntilExit()
+        
+        // Then close the window using Cmd+W or Cmd+Shift+W
+        let closeScript = """
+        tell application "System Events"
+            tell process "Cursor"
+                set frontmost to true
+                keystroke "w" using {command down, shift down}
+            end tell
+        end tell
+        """
+        
+        task = Process()
+        task.launchPath = "/usr/bin/osascript"
+        task.arguments = ["-e", closeScript]
+        try? task.run()
+        task.waitUntilExit()
+        
+        Thread.sleep(forTimeInterval: 0.3)
+    }
+    
+    func closeTerminalWindows() {
+        // Send Ctrl+C to stop processes, then close window
+        let appleScript = """
+        tell application "Terminal"
+            if (count windows) > 0 then
+                activate
+                tell application "System Events"
+                    tell process "Terminal"
+                        keystroke "c" using control down
+                    end tell
+                end tell
+                delay 0.3
+                close windows
+            end if
+        end tell
+        """
+        
+        let task = Process()
+        task.launchPath = "/usr/bin/osascript"
+        task.arguments = ["-e", appleScript]
+        try? task.run()
+        task.waitUntilExit()
     }
     
     func startRepo(workspace: Workspace, repo: Repo) {
