@@ -27,6 +27,7 @@ struct Repo: Codable, Identifiable {
 struct AppSettings: Codable {
     var openInCursor: Bool?
     var useTerminalTabs: Bool?
+    var useCursorTerminal: Bool?  // Run commands inside Cursor's terminal
 }
 
 enum RepoStatus: Equatable {
@@ -154,54 +155,138 @@ class WorkspaceManager: ObservableObject {
     }
     
     func startWorkspaceInTerminal(_ workspace: Workspace, openCursor: Bool) {
-        // Open each repo in a new Terminal tab with the full setup script
-        for (index, repo) in workspace.repos.enumerated() {
+        let useCursorTerminal = config.settings?.useCursorTerminal ?? false
+        
+        if useCursorTerminal {
+            startWorkspaceInCursorTerminal(workspace)
+        } else {
+            // Open each repo in a new Terminal tab with the full setup script
+            for (index, repo) in workspace.repos.enumerated() {
+                let key = "\(workspace.name):\(repo.name)"
+                let repoPath = expandPath(repo.path)
+                
+                // Build the script
+                var script = "cd \"\(repoPath)\""
+                
+                if let nodeVersion = workspace.nodeVersion {
+                    script += " && export NVM_DIR=\"$HOME/.nvm\" && [ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\" && nvm use \(nodeVersion)"
+                }
+                
+                if let branch = repo.branch {
+                    script += " && git checkout \(branch) && git pull"
+                }
+                
+                if let install = repo.install {
+                    script += " && \(install)"
+                }
+                
+                script += " && \(repo.run)"
+                
+                // Use AppleScript to open Terminal with tabs
+                let appleScript: String
+                if index == 0 {
+                    // First repo - new window
+                    appleScript = """
+                    tell application "Terminal"
+                        activate
+                        do script "\(script.replacingOccurrences(of: "\"", with: "\\\""))"
+                        set custom title of front window to "\(repo.name)"
+                    end tell
+                    """
+                } else {
+                    // Subsequent repos - new tab
+                    appleScript = """
+                    tell application "Terminal"
+                        activate
+                        tell application "System Events" to keystroke "t" using command down
+                        delay 0.3
+                        do script "\(script.replacingOccurrences(of: "\"", with: "\\\""))" in front window
+                    end tell
+                    """
+                }
+                
+                DispatchQueue.main.async {
+                    self.repoStatuses[key] = .settingUp("opening terminal")
+                }
+                
+                let task = Process()
+                task.launchPath = "/usr/bin/osascript"
+                task.arguments = ["-e", appleScript]
+                try? task.run()
+                task.waitUntilExit()
+                
+                DispatchQueue.main.async {
+                    self.repoStatuses[key] = .running
+                }
+                
+                // Open in Cursor
+                if openCursor {
+                    openInCursor(repo)
+                }
+                
+                // Small delay between tabs
+                Thread.sleep(forTimeInterval: 0.5)
+            }
+        }
+    }
+    
+    func startWorkspaceInCursorTerminal(_ workspace: Workspace) {
+        for repo in workspace.repos {
             let key = "\(workspace.name):\(repo.name)"
             let repoPath = expandPath(repo.path)
             
-            // Build the script
-            var script = "cd \"\(repoPath)\""
-            
-            if let nodeVersion = workspace.nodeVersion {
-                script += " && export NVM_DIR=\"$HOME/.nvm\" && [ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\" && nvm use \(nodeVersion)"
+            DispatchQueue.main.async {
+                self.repoStatuses[key] = .settingUp("opening cursor")
             }
             
-            if let branch = repo.branch {
-                script += " && git checkout \(branch) && git pull"
+            // Build the command to run
+            var command = ""
+            
+            if let nodeVersion = workspace.nodeVersion {
+                command += "nvm use \(nodeVersion) && "
             }
             
             if let install = repo.install {
-                script += " && \(install)"
+                command += "\(install) && "
             }
             
-            script += " && \(repo.run)"
+            command += repo.run
             
-            // Use AppleScript to open Terminal with tabs
-            let appleScript: String
-            if index == 0 {
-                // First repo - new window
-                appleScript = """
-                tell application "Terminal"
-                    activate
-                    do script "\(script.replacingOccurrences(of: "\"", with: "\\\""))"
-                    set custom title of front window to "\(repo.name)"
-                end tell
-                """
-            } else {
-                // Subsequent repos - new tab
-                appleScript = """
-                tell application "Terminal"
-                    activate
-                    tell application "System Events" to keystroke "t" using command down
-                    delay 0.3
-                    do script "\(script.replacingOccurrences(of: "\"", with: "\\\""))" in front window
-                end tell
-                """
-            }
+            // Step 1: Open repo in Cursor
+            let openCursor = Process()
+            openCursor.launchPath = "/usr/bin/open"
+            openCursor.arguments = ["-a", "Cursor", repoPath]
+            try? openCursor.run()
+            openCursor.waitUntilExit()
+            
+            // Wait for Cursor to open
+            Thread.sleep(forTimeInterval: 2.0)
             
             DispatchQueue.main.async {
                 self.repoStatuses[key] = .settingUp("opening terminal")
             }
+            
+            // Step 2: Use AppleScript to open terminal and run command
+            let escapedCommand = command
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            
+            let appleScript = """
+            tell application "Cursor" to activate
+            delay 0.5
+            tell application "System Events"
+                tell process "Cursor"
+                    -- Open terminal with Ctrl+`
+                    keystroke "`" using control down
+                    delay 0.8
+                    -- Type the command
+                    keystroke "\(escapedCommand)"
+                    delay 0.2
+                    -- Press Enter
+                    keystroke return
+                end tell
+            end tell
+            """
             
             let task = Process()
             task.launchPath = "/usr/bin/osascript"
@@ -213,13 +298,8 @@ class WorkspaceManager: ObservableObject {
                 self.repoStatuses[key] = .running
             }
             
-            // Open in Cursor
-            if openCursor {
-                openInCursor(repo)
-            }
-            
-            // Small delay between tabs
-            Thread.sleep(forTimeInterval: 0.5)
+            // Delay before next repo
+            Thread.sleep(forTimeInterval: 1.5)
         }
     }
     
