@@ -318,63 +318,78 @@ class WorkspaceManager: ObservableObject {
             
             command += repo.run
             
-            // Step 1: Open repo in Cursor using cursor CLI (better than open -a)
-            var openCursor = Process()
+            // Step 1: Open repo in Cursor using cursor CLI with --new-window
+            let openCursor = Process()
             openCursor.launchPath = "/bin/zsh"
-            openCursor.arguments = ["-c", "cursor \"\(repoPath)\""]
+            openCursor.arguments = ["-c", "cursor --new-window \"\(repoPath)\""]
             openCursor.environment = ProcessInfo.processInfo.environment
             try? openCursor.run()
             openCursor.waitUntilExit()
             
             // Wait for Cursor to fully open and load
-            Thread.sleep(forTimeInterval: 3.0)
+            Thread.sleep(forTimeInterval: 4.0)
             
             DispatchQueue.main.async {
                 self.repoStatuses[key] = .settingUp("preparing terminal")
             }
             
             // Step 2: Robust terminal cleanup and command execution
-            // Using menu bar navigation which is more reliable than keyboard shortcuts
+            let repoName = URL(fileURLWithPath: repoPath).lastPathComponent
             let escapedCommand = command
                 .replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "\"", with: "\\\"")
-                .replacingOccurrences(of: "'", with: "'\\''")
             
             let script = """
-            tell application "Cursor" to activate
-            delay 0.5
+            -- First, find and focus the correct Cursor window by title
+            tell application "Cursor"
+                activate
+                delay 0.5
+                -- Find window with repo name in title
+                repeat with w in windows
+                    if name of w contains "\(repoName)" then
+                        set index of w to 1
+                        exit repeat
+                    end if
+                end repeat
+                delay 0.5
+            end tell
 
             tell application "System Events"
                 tell process "Cursor"
                     set frontmost to true
-                    delay 0.3
+                    delay 0.5
                     
                     -- Press Escape twice to close any dialogs/panels
                     key code 53
                     delay 0.2
                     key code 53
-                    delay 0.3
+                    delay 0.5
                     
-                    -- Use Terminal menu to kill all terminals
+                    -- Use Terminal menu to kill all terminals in this window
                     try
                         click menu bar item "Terminal" of menu bar 1
-                        delay 0.3
+                        delay 0.4
                         click menu item "Kill All Terminals" of menu "Terminal" of menu bar 1
-                        delay 0.5
+                        delay 0.8
+                    on error
+                        -- Menu item might not exist if no terminals, continue
+                        key code 53
+                        delay 0.3
                     end try
                     
                     -- Use Terminal menu to create new terminal
                     click menu bar item "Terminal" of menu bar 1
-                    delay 0.3
+                    delay 0.4
                     click menu item "New Terminal" of menu "Terminal" of menu bar 1
-                    delay 1.5
+                    delay 2.0
                     
                     -- Now type the command
                     keystroke "\(escapedCommand)"
-                    delay 0.3
+                    delay 0.5
                     
                     -- Press Enter using key code
                     key code 36
+                    delay 0.5
                 end tell
             end tell
             """
@@ -389,8 +404,8 @@ class WorkspaceManager: ObservableObject {
                 self.repoStatuses[key] = .running
             }
             
-            // Longer delay before next repo
-            Thread.sleep(forTimeInterval: 2.5)
+            // Longer delay before next repo to let everything settle
+            Thread.sleep(forTimeInterval: 3.0)
         }
     }
     
