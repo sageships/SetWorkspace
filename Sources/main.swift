@@ -4,6 +4,7 @@ import AppKit
 // MARK: - Models
 struct WorkspaceConfig: Codable {
     var workspaces: [Workspace]
+    var settings: AppSettings?
 }
 
 struct Workspace: Codable, Identifiable {
@@ -20,6 +21,12 @@ struct Repo: Codable, Identifiable {
     var branch: String?
     var install: String?
     var run: String
+    var openInEditor: Bool?  // Open in Cursor/VS Code
+}
+
+struct AppSettings: Codable {
+    var openInCursor: Bool?
+    var useTerminalTabs: Bool?
 }
 
 enum RepoStatus: Equatable {
@@ -121,8 +128,98 @@ class WorkspaceManager: ObservableObject {
     }
     
     func startWorkspace(_ workspace: Workspace) {
-        for repo in workspace.repos {
-            startRepo(workspace: workspace, repo: repo)
+        let useTerminal = config.settings?.useTerminalTabs ?? false
+        let openCursor = config.settings?.openInCursor ?? false
+        
+        if useTerminal {
+            startWorkspaceInTerminal(workspace, openCursor: openCursor)
+        } else {
+            for repo in workspace.repos {
+                startRepo(workspace: workspace, repo: repo)
+            }
+            if openCursor {
+                for repo in workspace.repos {
+                    openInCursor(repo)
+                }
+            }
+        }
+    }
+    
+    func openInCursor(_ repo: Repo) {
+        let repoPath = expandPath(repo.path)
+        let task = Process()
+        task.launchPath = "/usr/bin/open"
+        task.arguments = ["-a", "Cursor", repoPath]
+        try? task.run()
+    }
+    
+    func startWorkspaceInTerminal(_ workspace: Workspace, openCursor: Bool) {
+        // Open each repo in a new Terminal tab with the full setup script
+        for (index, repo) in workspace.repos.enumerated() {
+            let key = "\(workspace.name):\(repo.name)"
+            let repoPath = expandPath(repo.path)
+            
+            // Build the script
+            var script = "cd \"\(repoPath)\""
+            
+            if let nodeVersion = workspace.nodeVersion {
+                script += " && export NVM_DIR=\"$HOME/.nvm\" && [ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\" && nvm use \(nodeVersion)"
+            }
+            
+            if let branch = repo.branch {
+                script += " && git checkout \(branch) && git pull"
+            }
+            
+            if let install = repo.install {
+                script += " && \(install)"
+            }
+            
+            script += " && \(repo.run)"
+            
+            // Use AppleScript to open Terminal with tabs
+            let appleScript: String
+            if index == 0 {
+                // First repo - new window
+                appleScript = """
+                tell application "Terminal"
+                    activate
+                    do script "\(script.replacingOccurrences(of: "\"", with: "\\\""))"
+                    set custom title of front window to "\(repo.name)"
+                end tell
+                """
+            } else {
+                // Subsequent repos - new tab
+                appleScript = """
+                tell application "Terminal"
+                    activate
+                    tell application "System Events" to keystroke "t" using command down
+                    delay 0.3
+                    do script "\(script.replacingOccurrences(of: "\"", with: "\\\""))" in front window
+                end tell
+                """
+            }
+            
+            DispatchQueue.main.async {
+                self.repoStatuses[key] = .settingUp("opening terminal")
+            }
+            
+            let task = Process()
+            task.launchPath = "/usr/bin/osascript"
+            task.arguments = ["-e", appleScript]
+            try? task.run()
+            task.waitUntilExit()
+            
+            DispatchQueue.main.async {
+                self.repoStatuses[key] = .running
+            }
+            
+            // Open in Cursor
+            if openCursor {
+                openInCursor(repo)
+            }
+            
+            // Small delay between tabs
+            Thread.sleep(forTimeInterval: 0.5)
         }
     }
     
