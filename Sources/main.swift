@@ -12,6 +12,14 @@ struct Workspace: Codable, Identifiable {
     var name: String
     var nodeVersion: String?
     var repos: [Repo]
+    var terminalCommands: [TerminalCommand]?  // Extra commands to run in Terminal.app
+}
+
+struct TerminalCommand: Codable, Identifiable {
+    var id: String { name }
+    var name: String
+    var command: String
+    var path: String?  // Optional working directory
 }
 
 struct Repo: Codable, Identifiable {
@@ -131,8 +139,16 @@ class WorkspaceManager: ObservableObject {
     func startWorkspace(_ workspace: Workspace) {
         let useTerminal = config.settings?.useTerminalTabs ?? false
         let openCursor = config.settings?.openInCursor ?? false
+        let useCursorTerminal = config.settings?.useCursorTerminal ?? false
         
-        if useTerminal {
+        // Run standalone terminal commands first (like emulators)
+        if let terminalCommands = workspace.terminalCommands, !terminalCommands.isEmpty {
+            runTerminalCommands(workspace: workspace, commands: terminalCommands)
+        }
+        
+        if useCursorTerminal {
+            startWorkspaceInCursorTerminal(workspace)
+        } else if useTerminal {
             startWorkspaceInTerminal(workspace, openCursor: openCursor)
         } else {
             for repo in workspace.repos {
@@ -144,6 +160,56 @@ class WorkspaceManager: ObservableObject {
                 }
             }
         }
+    }
+    
+    func runTerminalCommands(workspace: Workspace, commands: [TerminalCommand]) {
+        for (index, cmd) in commands.enumerated() {
+            let key = "\(workspace.name):terminal:\(cmd.name)"
+            
+            var script = ""
+            if let path = cmd.path {
+                script = "cd \"\(expandPath(path))\" && "
+            }
+            script += cmd.command
+            
+            let appleScript: String
+            if index == 0 {
+                appleScript = """
+                tell application "Terminal"
+                    activate
+                    do script "\(script.replacingOccurrences(of: "\"", with: "\\\""))"
+                end tell
+                """
+            } else {
+                appleScript = """
+                tell application "Terminal"
+                    activate
+                    tell application "System Events" to keystroke "t" using command down
+                    delay 0.3
+                    do script "\(script.replacingOccurrences(of: "\"", with: "\\\""))" in front window
+                end tell
+                """
+            }
+            
+            DispatchQueue.main.async {
+                self.repoStatuses[key] = .settingUp("starting \(cmd.name)")
+            }
+            
+            let task = Process()
+            task.launchPath = "/usr/bin/osascript"
+            task.arguments = ["-e", appleScript]
+            try? task.run()
+            task.waitUntilExit()
+            
+            DispatchQueue.main.async {
+                self.repoStatuses[key] = .running
+            }
+            
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        
+        // Small delay before starting repos
+        Thread.sleep(forTimeInterval: 1.0)
     }
     
     func openInCursor(_ repo: Repo) {
