@@ -325,38 +325,67 @@ class WorkspaceManager: ObservableObject {
             try? openCursor.run()
             openCursor.waitUntilExit()
             
-            // Wait for Cursor to open
-            Thread.sleep(forTimeInterval: 2.0)
+            // Wait for Cursor to open and load
+            Thread.sleep(forTimeInterval: 2.5)
             
             DispatchQueue.main.async {
-                self.repoStatuses[key] = .settingUp("opening terminal")
+                self.repoStatuses[key] = .settingUp("preparing terminal")
             }
             
-            // Step 2: Use AppleScript to open terminal and run command
+            // Step 2: Kill all existing terminals using Command Palette
+            let killTerminalsScript = """
+            tell application "Cursor" to activate
+            delay 0.3
+            tell application "System Events"
+                tell process "Cursor"
+                    -- Open command palette with Cmd+Shift+P
+                    keystroke "p" using {command down, shift down}
+                    delay 0.5
+                    -- Type kill all terminals
+                    keystroke "Terminal: Kill All Terminals"
+                    delay 0.3
+                    -- Press Enter
+                    keystroke return
+                    delay 0.5
+                end tell
+            end tell
+            """
+            
+            var task = Process()
+            task.launchPath = "/usr/bin/osascript"
+            task.arguments = ["-e", killTerminalsScript]
+            try? task.run()
+            task.waitUntilExit()
+            
+            DispatchQueue.main.async {
+                self.repoStatuses[key] = .settingUp("running command")
+            }
+            
+            // Step 3: Open fresh terminal and run command
             let escapedCommand = command
                 .replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "\"", with: "\\\"")
             
-            let appleScript = """
+            let runCommandScript = """
             tell application "Cursor" to activate
-            delay 0.5
+            delay 0.3
             tell application "System Events"
                 tell process "Cursor"
-                    -- Open terminal with Ctrl+`
-                    keystroke "`" using control down
-                    delay 0.8
+                    -- Open NEW terminal with Ctrl+Shift+`
+                    keystroke "`" using {control down, shift down}
+                    delay 1.0
                     -- Type the command
                     keystroke "\(escapedCommand)"
-                    delay 0.2
+                    delay 0.3
                     -- Press Enter
                     keystroke return
                 end tell
             end tell
             """
             
-            let task = Process()
+            task = Process()
             task.launchPath = "/usr/bin/osascript"
-            task.arguments = ["-e", appleScript]
+            task.arguments = ["-e", runCommandScript]
             try? task.run()
             task.waitUntilExit()
             
@@ -365,7 +394,7 @@ class WorkspaceManager: ObservableObject {
             }
             
             // Delay before next repo
-            Thread.sleep(forTimeInterval: 1.5)
+            Thread.sleep(forTimeInterval: 2.0)
         }
     }
     
