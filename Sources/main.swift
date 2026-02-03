@@ -318,74 +318,70 @@ class WorkspaceManager: ObservableObject {
             
             command += repo.run
             
-            // Step 1: Open repo in Cursor
-            let openCursor = Process()
-            openCursor.launchPath = "/usr/bin/open"
-            openCursor.arguments = ["-a", "Cursor", repoPath]
+            // Step 1: Open repo in Cursor using cursor CLI (better than open -a)
+            var openCursor = Process()
+            openCursor.launchPath = "/bin/zsh"
+            openCursor.arguments = ["-c", "cursor \"\(repoPath)\""]
+            openCursor.environment = ProcessInfo.processInfo.environment
             try? openCursor.run()
             openCursor.waitUntilExit()
             
-            // Wait for Cursor to open and load
-            Thread.sleep(forTimeInterval: 2.5)
+            // Wait for Cursor to fully open and load
+            Thread.sleep(forTimeInterval: 3.0)
             
             DispatchQueue.main.async {
                 self.repoStatuses[key] = .settingUp("preparing terminal")
             }
             
-            // Step 2: Kill all existing terminals using Command Palette
-            let killTerminalsScript = """
-            tell application "Cursor" to activate
-            delay 0.3
-            tell application "System Events"
-                tell process "Cursor"
-                    -- Open command palette with Cmd+Shift+P
-                    keystroke "p" using {command down, shift down}
-                    delay 0.5
-                    -- Type kill all terminals
-                    keystroke "Terminal: Kill All Terminals"
-                    delay 0.3
-                    -- Press Enter
-                    keystroke return
-                    delay 0.5
-                end tell
-            end tell
-            """
-            
-            var task = Process()
-            task.launchPath = "/usr/bin/osascript"
-            task.arguments = ["-e", killTerminalsScript]
-            try? task.run()
-            task.waitUntilExit()
-            
-            DispatchQueue.main.async {
-                self.repoStatuses[key] = .settingUp("running command")
-            }
-            
-            // Step 3: Open fresh terminal and run command
+            // Step 2: Robust terminal cleanup and command execution
+            // Using menu bar navigation which is more reliable than keyboard shortcuts
             let escapedCommand = command
                 .replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "\"", with: "\\\"")
+                .replacingOccurrences(of: "'", with: "'\\''")
             
-            let runCommandScript = """
+            let script = """
             tell application "Cursor" to activate
-            delay 0.3
+            delay 0.5
+
             tell application "System Events"
                 tell process "Cursor"
-                    -- Open NEW terminal with Ctrl+Shift+`
-                    keystroke "`" using {control down, shift down}
-                    delay 1.0
-                    -- Type the command
+                    set frontmost to true
+                    delay 0.3
+                    
+                    -- Press Escape twice to close any dialogs/panels
+                    key code 53
+                    delay 0.2
+                    key code 53
+                    delay 0.3
+                    
+                    -- Use Terminal menu to kill all terminals
+                    try
+                        click menu bar item "Terminal" of menu bar 1
+                        delay 0.3
+                        click menu item "Kill All Terminals" of menu "Terminal" of menu bar 1
+                        delay 0.5
+                    end try
+                    
+                    -- Use Terminal menu to create new terminal
+                    click menu bar item "Terminal" of menu bar 1
+                    delay 0.3
+                    click menu item "New Terminal" of menu "Terminal" of menu bar 1
+                    delay 1.5
+                    
+                    -- Now type the command
                     keystroke "\(escapedCommand)"
                     delay 0.3
-                    -- Press Enter
-                    keystroke return
+                    
+                    -- Press Enter using key code
+                    key code 36
                 end tell
             end tell
             """
             
-            task = Process()
+            let task = Process()
             task.launchPath = "/usr/bin/osascript"
-            task.arguments = ["-e", runCommandScript]
+            task.arguments = ["-e", script]
             try? task.run()
             task.waitUntilExit()
             
@@ -393,8 +389,8 @@ class WorkspaceManager: ObservableObject {
                 self.repoStatuses[key] = .running
             }
             
-            // Delay before next repo
-            Thread.sleep(forTimeInterval: 2.0)
+            // Longer delay before next repo
+            Thread.sleep(forTimeInterval: 2.5)
         }
     }
     
